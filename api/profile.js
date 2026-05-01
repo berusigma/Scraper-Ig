@@ -13,8 +13,7 @@ export default async function handler(req, res) {
             ds_user_id: "65092514569",
             csrf_token: "t-YhlTgmNH1_CDj2ta4iUc"
         }
-        
-        {
+
             session_id: "27779556110:hUxmquH94hhCVR:13:AYjCmMHEJQNAffyuEKL35jLA5U1neluCP0kXsS6Xyg",
             ds_user_id: "27779556110",
             csrf_token: "IS7x4lexpM5aGQh74qy4RjEaWZRqndkF"
