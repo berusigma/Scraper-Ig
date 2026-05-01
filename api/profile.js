@@ -8,9 +8,9 @@ export default async function handler(req, res) {
     // ==========================================
     // TRIO COOKIE VIP (DATA TUMBAL)
     // ==========================================
-    const SESSION_ID = "65092514569:tofeB3s3mKckSB:10:AYjrax5Hn5rGBL4ziAq5qoJrdofjeOctzBkqto5lYw";
-    const DS_USER_ID = "65092514569";
-    const CSRF_TOKEN = "t-YhlTgmNH1_CDj2ta4iUc";
+    const SESSION_ID = "27779556110:eFiJoiDK6tfLjg:29:AYjwJdsZkso6zMXQ79ycvGhuGf7iHiTypJ8zraT AOA";
+    const DS_USER_ID = "27779556110";
+    const CSRF_TOKEN = "h6Hkr0qih9ngvHLFMdA1sWlctxKxf4v4";
 
     // ANTI RATE LIMIT BASIC: Acak User-Agent biar gak gampang di-flag spam bot
     const userAgents = [
