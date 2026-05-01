@@ -1,0 +1,12 @@
+{
+  "name": "ig-downloader-api",
+  "version": "1.0.0",
+  "description": "Backend IG pakai scraper-instagram",
+  "main": "api/profile.js",
+  "scripts": {
+    "start": "node api/profile.js"
+  },
+  "dependencies": {
+    "scraper-instagram": "^1.0.17"
+  }
+}
