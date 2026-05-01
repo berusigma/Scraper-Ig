@@ -4,15 +4,19 @@ export default async function handler(req, res) {
 
     const { url, highlight_id } = req.query;
 
+    // DATA TUMBAL (PASTIKAN MASIH AKTIF)
     const SESSION_ID = "65092514569:tofeB3s3mKckSB:10:AYjrax5Hn5rGBL4ziAq5qoJrdofjeOctzBkqto5lYw";
-    const DS_USER_ID = "65092514569";
     const CSRF_TOKEN = "t-YhlTgmNH1_CDj2ta4iUc";
 
+    // Header Sakti (Hasil sniffing aplikasi Instagram resmi)
     const headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1",
         "X-IG-App-ID": "936619743392459",
+        "X-ASBD-ID": "129477", // ID khusus Android/iOS
+        "X-IG-WWW-Claim": "0",
         "X-CSRFToken": CSRF_TOKEN,
-        "Cookie": `sessionid=${SESSION_ID}; ds_user_id=${DS_USER_ID}; csrftoken=${CSRF_TOKEN};`,
+        "X-Requested-With": "XMLHttpRequest",
+        "Cookie": `sessionid=${SESSION_ID}; csrftoken=${CSRF_TOKEN};`,
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.instagram.com/",
@@ -21,6 +25,7 @@ export default async function handler(req, res) {
     };
 
     try {
+        // FITUR: AMBIL ISI HIGHLIGHT (Jika ada parameter highlight_id)
         if (highlight_id) {
             const hRes = await fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:${highlight_id}`, { headers });
             const hData = await hRes.json();
@@ -28,35 +33,33 @@ export default async function handler(req, res) {
             return res.status(200).json({
                 success: true,
                 items: items.map(i => ({
-                    url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url,
-                    is_video: i.media_type !== 1
+                    id: i.id,
+                    type: i.media_type === 1 ? "image" : "video",
+                    url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url
                 }))
             });
         }
 
-        let username = "";
-        if (url.includes("instagram.com")) {
-            const parsedUrl = new URL(url);
-            username = parsedUrl.pathname.replace(/\//g, '').trim(); 
-        } else {
-            username = url.replace('@', '').trim();
-        }
+        if (!url) return res.status(400).json({ success: false, message: "Link mana bro?" });
 
-        // 1. AMBIL PROFIL & SEMUA JENIS TIMELINE
-        const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, { headers });
+        // Pembersihan Username
+        let username = url.includes("instagram.com") 
+            ? new URL(url).pathname.replace(/\//g, '').trim() 
+            : url.replace('@', '').trim();
+
+        // 1. TARIK DATA PROFIL & MEDIA (Gunakan Endpoint Mobile biar gak kosong)
+        const profileUrl = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
+        const profileRes = await fetch(profileUrl, { headers });
         const profileData = await profileRes.json();
+        
+        if (!profileData?.data?.user) throw new Error("Gagal tarik profil. Session mungkin expired.");
+        
         const user = profileData.data.user;
         const userId = user.id;
 
-        // GABUNGIN GRID BIASA + VIDEO TIMELINE (REELS)
-        const gridEdges = user.edge_owner_to_timeline_media.edges || [];
-        const videoEdges = user.edge_felix_video_timeline?.edges || [];
-        const allEdges = [...gridEdges, ...videoEdges];
-
-        // Hapus duplikat berdasarkan ID
-        const uniqueEdges = Array.from(new Map(allEdges.map(item => [item.node.id, item])).values());
-
-        const posts = uniqueEdges.map(edge => {
+        // BONGKAR SEMUA JENIS MEDIA (Posts, Reels, Carousel)
+        const timeline = user.edge_owner_to_timeline_media.edges || [];
+        const posts = timeline.map(edge => {
             const node = edge.node;
             let slides = [];
             if (node.edge_sidecar_to_children) {
@@ -69,14 +72,14 @@ export default async function handler(req, res) {
                 id: node.id,
                 shortcode: node.shortcode,
                 thumbnail: node.display_url,
-                video_url: node.video_url || null,
+                video_url: node.video_url || null, // Otomatis Reels dapet link MP4 di sini
                 is_video: node.is_video,
                 caption: node.edge_media_to_caption?.edges[0]?.node?.text || "",
-                slides: slides
+                slides: slides // Kalau Slide, isinya foto/video banyak
             };
         });
 
-        // 2. STORIES & HIGHLIGHTS
+        // 2. TARIK STORIES & HIGHLIGHTS
         const [storyRes, highlightRes] = await Promise.all([
             fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers }),
             fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers })
@@ -86,6 +89,7 @@ export default async function handler(req, res) {
         if (storyRes.ok) {
             const sData = await storyRes.json();
             stories = (sData.reels_media[0]?.items || []).map(i => ({
+                id: i.id,
                 url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url,
                 is_video: i.media_type !== 1
             }));
