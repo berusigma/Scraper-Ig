@@ -4,9 +4,6 @@ export default async function handler(req, res) {
 
     const { url, highlight_id } = req.query;
 
-    // ==========================================
-    // TRIO COOKIE VIP (DATA TUMBAL LU)
-    // ==========================================
     const SESSION_ID = "65092514569:tofeB3s3mKckSB:10:AYjrax5Hn5rGBL4ziAq5qoJrdofjeOctzBkqto5lYw";
     const DS_USER_ID = "65092514569";
     const CSRF_TOKEN = "t-YhlTgmNH1_CDj2ta4iUc";
@@ -18,31 +15,24 @@ export default async function handler(req, res) {
         "Cookie": `sessionid=${SESSION_ID}; ds_user_id=${DS_USER_ID}; csrftoken=${CSRF_TOKEN};`,
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.instagram.com/",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin"
     };
 
     try {
-        // LOGIKA 1: JIKA USER MAU LIAT ISI DALAM HIGHLIGHT TERTENTU
         if (highlight_id) {
-            const hMediaUrl = `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:${highlight_id}`;
-            const hRes = await fetch(hMediaUrl, { headers });
+            const hRes = await fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:${highlight_id}`, { headers });
             const hData = await hRes.json();
             const items = hData.reels_media[0]?.items || [];
-            
             return res.status(200).json({
                 success: true,
-                type: "highlight_items",
                 items: items.map(i => ({
-                    id: i.id,
-                    type: i.media_type === 1 ? "image" : "video",
-                    url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url
+                    url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url,
+                    is_video: i.media_type !== 1
                 }))
             });
         }
-
-        // LOGIKA 2: SCRAPE PROFIL LENGKAP (POST, BIO, STORY, TRAY HIGHLIGHT)
-        if (!url) return res.status(400).json({ success: false, message: "Link mana bro?" });
 
         let username = "";
         if (url.includes("instagram.com")) {
@@ -52,22 +42,27 @@ export default async function handler(req, res) {
             username = url.replace('@', '').trim();
         }
 
-        // 1. Ambil Profil & Postingan
+        // 1. AMBIL PROFIL & SEMUA JENIS TIMELINE
         const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, { headers });
         const profileData = await profileRes.json();
         const user = profileData.data.user;
         const userId = user.id;
 
-        // Bedah Postingan (Fix Carousel/Slide)
-        const grid = (user.edge_owner_to_timeline_media.edges || []).map(edge => {
+        // GABUNGIN GRID BIASA + VIDEO TIMELINE (REELS)
+        const gridEdges = user.edge_owner_to_timeline_media.edges || [];
+        const videoEdges = user.edge_felix_video_timeline?.edges || [];
+        const allEdges = [...gridEdges, ...videoEdges];
+
+        // Hapus duplikat berdasarkan ID
+        const uniqueEdges = Array.from(new Map(allEdges.map(item => [item.node.id, item])).values());
+
+        const posts = uniqueEdges.map(edge => {
             const node = edge.node;
             let slides = [];
-            // Jika postingan adalah slide/carousel
             if (node.edge_sidecar_to_children) {
                 slides = node.edge_sidecar_to_children.edges.map(c => ({
                     url: c.node.is_video ? c.node.video_url : c.node.display_url,
-                    is_video: c.node.is_video,
-                    type: c.node.__typename
+                    is_video: c.node.is_video
                 }));
             }
             return {
@@ -77,34 +72,32 @@ export default async function handler(req, res) {
                 video_url: node.video_url || null,
                 is_video: node.is_video,
                 caption: node.edge_media_to_caption?.edges[0]?.node?.text || "",
-                slides: slides // Semua foto/video dalam slide masuk sini
+                slides: slides
             };
         });
 
-        // 2. Ambil Stories & Daftar Highlight (Tray)
+        // 2. STORIES & HIGHLIGHTS
         const [storyRes, highlightRes] = await Promise.all([
             fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers }),
             fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers })
         ]);
 
-        let active_stories = [];
+        let stories = [];
         if (storyRes.ok) {
             const sData = await storyRes.json();
-            active_stories = (sData.reels_media[0]?.items || []).map(i => ({
-                id: i.id,
+            stories = (sData.reels_media[0]?.items || []).map(i => ({
                 url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url,
                 is_video: i.media_type !== 1
             }));
         }
 
-        let highlight_tray = [];
+        let highlights = [];
         if (highlightRes.ok) {
             const hData = await highlightRes.json();
-            highlight_tray = (hData.tray || []).map(t => ({
-                id: t.id.split(':')[1] || t.id, // Ambil ID murninya
+            highlights = (hData.tray || []).map(t => ({
+                id: t.id.split(':')[1] || t.id,
                 title: t.title,
-                cover: t.cover_media.cropped_image_version.url,
-                media_count: t.media_count
+                cover: t.cover_media.cropped_image_version.url
             }));
         }
 
@@ -120,11 +113,7 @@ export default async function handler(req, res) {
                 following: user.edge_follow.count,
                 posts_count: user.edge_owner_to_timeline_media.count
             },
-            data: {
-                posts: grid,
-                stories: active_stories,
-                highlights: highlight_tray
-            }
+            data: { posts, stories, highlights }
         });
 
     } catch (error) {
