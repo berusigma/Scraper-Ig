@@ -3,7 +3,6 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-    // Nangkep parameter 'url' dari aplikasi lu
     const { url } = req.query;
 
     if (!url) {
@@ -13,14 +12,11 @@ export default async function handler(req, res) {
     try {
         let username = "";
 
-        // 1. LOGIKA PEMBERSIH LINK (Motong ?igsh= dll)
+        // 1. LOGIKA PEMBERSIH LINK
         if (url.includes("instagram.com")) {
-            // Kalau yang dimasukin bentuknya link (https://www.instagram.com/rayywashere_?igsh=...)
             const parsedUrl = new URL(url);
-            // Ngambil "rayywashere_" dari path "/rayywashere_/"
             username = parsedUrl.pathname.replace(/\//g, '').trim(); 
         } else {
-            // Kalau yang dimasukin cuma username biasa ("@rayywashere_")
             username = url.replace('@', '').trim();
         }
 
@@ -28,15 +24,13 @@ export default async function handler(req, res) {
             throw new Error("Gagal nemuin username dari link tersebut.");
         }
 
-        // 2. MESIN PENYEDOT UTAMA (Tembak API Internal IG)
+        // 2. MESIN PENYEDOT UTAMA (Tembak API Internal IG tanpa Cookie)
         const targetUrl = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
 
         const response = await fetch(targetUrl, {
             method: 'GET',
             headers: {
-                // Nyamar jadi browser Chrome versi terbaru
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-                // Kunci sakti buat buka pintu JSON IG tanpa login
                 "X-IG-App-ID": "936619743392459",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Sec-Fetch-Mode": "cors",
@@ -56,19 +50,54 @@ export default async function handler(req, res) {
 
         const user = data.data.user;
 
-        // 3. SUSUN DATA BIAR RAPI UNTUK KOTLIN
+        // ==========================================
+        // 3. MESIN PEMBONGKAR POSTINGAN (GRID, REELS, CAROUSEL)
+        // ==========================================
+        const timelineEdges = user.edge_owner_to_timeline_media.edges || [];
+        const posts_data = timelineEdges.map(edge => {
+            const node = edge.node;
+            let children = [];
+
+            // Kalau postingannya berupa kumpulan foto/video (Slide)
+            if (node.__typename === 'GraphSidecar' && node.edge_sidecar_to_children) {
+                children = node.edge_sidecar_to_children.edges.map(child => {
+                    const cNode = child.node;
+                    return {
+                        id: cNode.id,
+                        type: cNode.__typename, // GraphImage atau GraphVideo
+                        url: cNode.is_video ? cNode.video_url : cNode.display_url
+                    };
+                });
+            }
+
+            return {
+                id: node.id,
+                shortcode: node.shortcode,
+                type: node.__typename, // Jenis: GraphImage, GraphVideo, atau GraphSidecar
+                thumbnail: node.display_url,
+                video_url: node.video_url || null, // Bakal keisi kalau dia Reels
+                carousel_items: children // Bakal keisi kalau dia foto Slide
+            };
+        });
+
+        // ==========================================
+        // 4. SUSUN DATA BIAR RAPI UNTUK KOTLIN
+        // ==========================================
         res.status(200).json({
             success: true,
-            extracted_username: username, // Biar lu tau sistem sukses motong link
+            extracted_username: username, 
             profile: {
                 id: user.id,
                 full_name: user.full_name,
                 bio: user.biography,
-                profile_pic_hd: user.profile_pic_url_hd, // FOTO RESOLUSI TINGGI
+                profile_pic_hd: user.profile_pic_url_hd, 
                 followers: user.edge_followed_by.count,
                 following: user.edge_follow.count,
-                posts: user.edge_owner_to_timeline_media.count,
+                total_posts: user.edge_owner_to_timeline_media.count,
                 is_private: user.is_private
+            },
+            data: {
+                posts: posts_data
             }
         });
 
