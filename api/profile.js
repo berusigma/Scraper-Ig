@@ -1,55 +1,47 @@
 export default async function handler(req, res) {
+    // Handling CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-    const { url, highlight_id, reel_url } = req.query;
+    const { url, highlight_id } = req.query;
 
     // ==========================================
-    // HEADER + COOKIE (BUAT STORY & HIGHLIGHT)
+    // TRIO COOKIE VIP (DATA TUMBAL)
     // ==========================================
     const SESSION_ID = "65092514569:tofeB3s3mKckSB:10:AYjrax5Hn5rGBL4ziAq5qoJrdofjeOctzBkqto5lYw";
     const DS_USER_ID = "65092514569";
     const CSRF_TOKEN = "t-YhlTgmNH1_CDj2ta4iUc";
 
-    const baseHeaders = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+    // ANTI RATE LIMIT BASIC: Acak User-Agent biar gak gampang di-flag spam bot
+    const userAgents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/114.0",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
+    ];
+    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+
+    const headers = {
+        "User-Agent": randomUA,
         "X-IG-App-ID": "936619743392459",
+        "X-CSRFToken": CSRF_TOKEN,
+        "Cookie": `sessionid=${SESSION_ID}; ds_user_id=${DS_USER_ID}; csrftoken=${CSRF_TOKEN};`,
+        "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin"
     };
 
-    const authHeaders = {
-        ...baseHeaders,
-        "X-CSRFToken": CSRF_TOKEN,
-        "Cookie": `sessionid=${SESSION_ID}; ds_user_id=${DS_USER_ID}; csrftoken=${CSRF_TOKEN};`
-    };
-
     try {
-        // ==========================================
-        // MODE 1: DOWNLOAD REELS DARI URL REELS
-        // ==========================================
-        if (reel_url) {
-            const reelId = extractReelId(reel_url);
-            if (!reelId) throw new Error("URL Reels tidak valid");
-
-            const reelData = await fetchReelMedia(reelId, authHeaders);
-            return res.status(200).json({
-                success: true,
-                type: "reel_download",
-                reel: reelData
-            });
-        }
-
-        // ==========================================
-        // MODE 2: LIHAT ISI HIGHLIGHT TERTENTU
-        // ==========================================
+        // ---------------------------------------------------------
+        // LOGIKA 1: DOWNLOAD ISI HIGHLIGHT TERTENTU (Dari Code 1)
+        // ---------------------------------------------------------
         if (highlight_id) {
             const hMediaUrl = `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:${highlight_id}`;
-            const hRes = await fetch(hMediaUrl, { headers: authHeaders });
+            const hRes = await fetch(hMediaUrl, { headers });
             const hData = await hRes.json();
             const items = hData.reels_media[0]?.items || [];
-
+            
             return res.status(200).json({
                 success: true,
                 type: "highlight_items",
@@ -61,33 +53,78 @@ export default async function handler(req, res) {
             });
         }
 
-        // ==========================================
-        // MODE 3: SCRAPE PROFIL LENGKAP
-        // ==========================================
         if (!url) return res.status(400).json({ success: false, message: "Link mana bro?" });
 
-        // Bersihin username
+        // ---------------------------------------------------------
+        // LOGIKA 2: SCRAPE REELS / POSTS DIRECT (Fitur Baru)
+        // Cek apakah URL adalah link Reels atau Feed tunggal
+        // ---------------------------------------------------------
+        if (url.includes('/reel/') || url.includes('/reels/') || url.includes('/p/')) {
+            // Ambil ID/Shortcode dari URL (misal: C8Axxx)
+            const match = url.match(/(?:reel|reels|p)\/([a-zA-Z0-9_-]+)/);
+            const shortcode = match ? match[1] : null;
+
+            if (!shortcode) throw new Error("Gagal ngambil kode unik dari link Reels lu.");
+
+            // Trik khusus: nambahin __a=1&__d=dis buat dapet raw JSON dari 1 postingan + dipaduin Cookie VIP
+            const reelRes = await fetch(`https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`, { headers });
+            const reelData = await reelRes.json();
+
+            // IG punya 2 jenis format response JSON untuk trick ini, kita handle dua-duanya
+            const item = reelData.items ? reelData.items[0] : (reelData.graphql ? reelData.graphql.shortcode_media : null);
+
+            if (!item) throw new Error("Data Reels gak ketemu. Mungkin akunnya private atau videonya udah dihapus.");
+
+            let raw_url = "";
+            let type = "image";
+
+            // Deteksi link mentahan MP4
+            if (item.video_versions && item.video_versions.length > 0) {
+                raw_url = item.video_versions[0].url;
+                type = "video";
+            } else if (item.is_video && item.video_url) {
+                raw_url = item.video_url;
+                type = "video";
+            } else if (item.image_versions2) {
+                raw_url = item.image_versions2.candidates[0].url; // Kalau ternyata link gambar
+            } else {
+                raw_url = item.display_url;
+            }
+
+            return res.status(200).json({
+                success: true,
+                type: "reel_or_post_download",
+                shortcode: shortcode,
+                media_type: type,
+                raw_url: raw_url
+            });
+        }
+
+        // ---------------------------------------------------------
+        // LOGIKA 3: SCRAPE PROFIL LENGKAP (Gabungan Post Code 2 + Story Code 1)
+        // ---------------------------------------------------------
         let username = "";
         if (url.includes("instagram.com")) {
             const parsedUrl = new URL(url);
-            username = parsedUrl.pathname.replace(/\//g, '').trim();
+            username = parsedUrl.pathname.replace(/\//g, '').trim(); 
         } else {
             username = url.replace('@', '').trim();
         }
-        if (!username) throw new Error("Username tidak ditemukan dari link.");
 
-        // ----- 3a. Profil + Postingan (pakai logika kode terakhir yang WORK) -----
+        if (!username) throw new Error("Username gak ketemu dari link.");
+
+        // 1. Ambil Profil & Timeline Postingan
         const profileUrl = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
-        const profileResponse = await fetch(profileUrl, { headers: baseHeaders });
-        if (!profileResponse.ok) throw new Error(`IG menolak akses (Status: ${profileResponse.status})`);
+        const profileResponse = await fetch(profileUrl, { headers });
+        if (!profileResponse.ok) throw new Error(`IG menolak akses (Status: ${profileResponse.status}). Kena rate limit/cookie mati.`);
 
-        const data = await profileResponse.json();
-        if (!data?.data?.user) throw new Error("Akun tidak ditemukan atau di-private sepenuhnya");
+        const profileData = await profileResponse.json();
+        if (!profileData?.data?.user) throw new Error("Akun tidak ditemukan atau di-private sepenuhnya");
 
-        const user = data.data.user;
+        const user = profileData.data.user;
         const userId = user.id;
 
-        // Postingan (LOGIKA DARI KODE LO YANG UDAH WORK)
+        // Bedah Postingan (DIAMBIL DARI KODE 2 YANG LU BILANG JALAN)
         const timelineEdges = user.edge_owner_to_timeline_media.edges || [];
         const posts = timelineEdges.map(edge => {
             const node = edge.node;
@@ -108,21 +145,44 @@ export default async function handler(req, res) {
                 type: node.__typename,
                 thumbnail: node.display_url,
                 video_url: node.video_url || null,
-                carousel_items: children
+                carousel_items: children // Semua slide ada di sini
             };
         });
 
-        // ----- 3b. Story & Highlights (pakai COOKIE biar WORK) -----
-        const [stories, highlights] = await Promise.all([
-            fetchStoriesWithCookie(userId, authHeaders),
-            fetchHighlightsWithCookie(userId, authHeaders)
+        // 2. Ambil Stories & Highlight Tray PAKE COOKIE VIP (Dari Code 1) biar gak ribet pake GraphQL publik
+        const [storyRes, highlightRes] = await Promise.all([
+            fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers }),
+            fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers })
         ]);
 
-        res.status(200).json({
+        let active_stories = [];
+        if (storyRes.ok) {
+            const sData = await storyRes.json();
+            active_stories = (sData.reels_media[0]?.items || []).map(i => ({
+                id: i.id,
+                type: i.media_type === 1 ? "image" : "video",
+                url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url
+            }));
+        }
+
+        let highlight_tray = [];
+        if (highlightRes.ok) {
+            const hData = await highlightRes.json();
+            highlight_tray = (hData.tray || []).map(t => ({
+                id: t.id.split(':')[1] || t.id,
+                title: t.title,
+                cover: t.cover_media?.cropped_image_version?.url || null,
+                media_count: t.media_count
+            }));
+        }
+
+        // Return Data Gabungan
+        return res.status(200).json({
             success: true,
             extracted_username: username,
             profile: {
                 id: user.id,
+                username: user.username,
                 full_name: user.full_name,
                 bio: user.biography,
                 profile_pic_hd: user.profile_pic_url_hd,
@@ -133,170 +193,16 @@ export default async function handler(req, res) {
             },
             data: {
                 posts,
-                stories,
-                highlights
+                stories: active_stories,
+                highlights: highlight_tray
             }
         });
 
     } catch (error) {
-        res.status(500).json({
-            success: false,
-            message: "Gagal menyedot data",
-            error: error.message
+        return res.status(500).json({ 
+            success: false, 
+            message: "Gagal menyedot data bro", 
+            error: error.message 
         });
-    }
-}
-
-// ==========================================
-// FUNGSI BANTU: EKSTRAK REEL ID DARI URL
-// ==========================================
-function extractReelId(reelUrl) {
-    try {
-        // Pola: /reel/{shortcode}/ atau /reels/{shortcode}/
-        const patterns = [
-            /\/reel\/([a-zA-Z0-9_-]+)/,
-            /\/reels\/([a-zA-Z0-9_-]+)/,
-            /\/p\/([a-zA-Z0-9_-]+)/ // kadang reel pake /p/ juga
-        ];
-        
-        for (const pattern of patterns) {
-            const match = reelUrl.match(pattern);
-            if (match) return match[1];
-        }
-        return null;
-    } catch {
-        return null;
-    }
-}
-
-// ==========================================
-// FUNGSI BANTU: AMBIL MEDIA REEL MENTAH
-// ==========================================
-async function fetchReelMedia(reelId, headers) {
-    try {
-        // Ambil data reel via GraphQL (no login needed, tapi pake cookie biar aman)
-        const queryHash = 'b3055c01b4b222b8a47dc12b090e4e64';
-        const variables = JSON.stringify({
-            shortcode: reelId,
-            child_comment_count: 3,
-            fetch_comment_count: 40,
-            parent_comment_count: 24,
-            has_threaded_comments: true
-        });
-        
-        const graphqlUrl = `https://www.instagram.com/graphql/query/?query_hash=${queryHash}&variables=${encodeURIComponent(variables)}`;
-        const resp = await fetch(graphqlUrl, { headers });
-        const json = await resp.json();
-        
-        const media = json.data?.shortcode_media;
-        if (!media) throw new Error("Reel tidak ditemukan");
-
-        // Ambil URL video mentah (tanpa watermark)
-        const videoUrl = media.video_url || 
-                        media.video_versions?.[0]?.url || 
-                        null;
-
-        // Ambil thumbnail
-        const thumbnail = media.display_url || 
-                         media.image_versions2?.candidates?.[0]?.url || 
-                         null;
-
-        return {
-            id: media.id,
-            shortcode: media.shortcode,
-            caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || "",
-            video_url: videoUrl,
-            thumbnail: thumbnail,
-            duration: media.video_duration || 0,
-            dimensions: {
-                width: media.dimensions?.width || 0,
-                height: media.dimensions?.height || 0
-            },
-            like_count: media.edge_media_preview_like?.count || 0,
-            comment_count: media.edge_media_to_comment?.count || 0,
-            view_count: media.video_view_count || 0
-        };
-    } catch (error) {
-        throw new Error(`Gagal mengambil reel: ${error.message}`);
-    }
-}
-
-// ==========================================
-// FUNGSI BANTU: STORY (PAKAI COOKIE)
-// ==========================================
-async function fetchStoriesWithCookie(userId, headers) {
-    try {
-        const url = `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`;
-        const resp = await fetch(url, { headers });
-        if (!resp.ok) return [];
-
-        const json = await resp.json();
-        const reelsMedia = json.reels_media?.[0];
-        if (!reelsMedia) return [];
-
-        const items = reelsMedia.items || [];
-        return items.map(item => ({
-            id: item.id,
-            type: item.media_type === 1 ? 'image' : 'video',
-            url: item.media_type === 1 
-                ? (item.image_versions2?.candidates?.[0]?.url || '')
-                : (item.video_versions?.[0]?.url || ''),
-            taken_at: item.taken_at_timestamp,
-            expiring_at: item.expiring_at_timestamp
-        }));
-    } catch {
-        return [];
-    }
-}
-
-// ==========================================
-// FUNGSI BANTU: HIGHLIGHTS (PAKAI COOKIE)
-// ==========================================
-async function fetchHighlightsWithCookie(userId, headers) {
-    try {
-        // Ambil daftar highlight
-        const trayUrl = `https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`;
-        const trayResp = await fetch(trayUrl, { headers });
-        if (!trayResp.ok) return [];
-
-        const trayData = await trayResp.json();
-        const trayItems = trayData.tray || [];
-
-        // Ambil detail tiap highlight (max 10)
-        const highlights = await Promise.all(
-            trayItems.slice(0, 10).map(async (item) => {
-                try {
-                    const detailUrl = `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:${item.id}`;
-                    const detailResp = await fetch(detailUrl, { headers });
-                    const detailData = detailResp.ok ? await detailResp.json() : null;
-                    const mediaItems = detailData?.reels_media?.[0]?.items || [];
-
-                    return {
-                        id: item.id,
-                        title: item.title,
-                        cover: item.cover_media?.cropped_image_version?.url || null,
-                        items: mediaItems.map(m => ({
-                            id: m.id,
-                            type: m.is_video ? 'video' : 'image',
-                            url: m.is_video
-                                ? (m.video_versions?.[0]?.url || '')
-                                : (m.image_versions2?.candidates?.[0]?.url || ''),
-                            taken_at: m.taken_at_timestamp
-                        }))
-                    };
-                } catch {
-                    return {
-                        id: item.id,
-                        title: item.title,
-                        cover: item.cover_media?.cropped_image_version?.url || null,
-                        items: []
-                    };
-                }
-            })
-        );
-
-        return highlights;
-    } catch {
-        return [];
     }
 }
