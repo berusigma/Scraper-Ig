@@ -1,4 +1,5 @@
 export default async function handler(req, res) {
+    // Setting CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
 
@@ -8,11 +9,13 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, message: "Link Instagram-nya mana bro?" });
     }
 
-    // SESSION ID LU
+    // SESSION ID TUMBAL LU
     const SESSION_ID = "65092514569:tofeB3s3mKckSB:10:AYjrax5Hn5rGBL4ziAq5qoJrdofjeOctzBkqto5lYw";
 
     try {
         let username = "";
+        
+        // Pembersih Link
         if (url.includes("instagram.com")) {
             const parsedUrl = new URL(url);
             username = parsedUrl.pathname.replace(/\//g, '').trim(); 
@@ -20,42 +23,47 @@ export default async function handler(req, res) {
             username = url.replace('@', '').trim();
         }
 
-        if (!username) throw new Error("Gagal nemuin username");
+        if (!username) throw new Error("Gagal nemuin username dari link");
 
-        const baseHeaders = {
+        // ==========================================
+        // HEADER SUPER LENGKAP + COOKIE VIP
+        // Kita pake ini buat SEMUA request biar aman 100%
+        // ==========================================
+        const headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
             "X-IG-App-ID": "936619743392459",
-            "Accept-Language": "en-US,en;q=0.9"
-        };
-
-        const vipHeaders = {
-            ...baseHeaders,
-            "Cookie": `sessionid=${SESSION_ID};`
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "Cookie": `sessionid=${SESSION_ID};` // Masuk langsung pake akun tumbal!
         };
 
         // ==========================================
         // 1. TEMBAK PROFIL & POSTINGAN GRID
         // ==========================================
-        const profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, { headers: baseHeaders });
+        const profileUrl = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
+        const profileRes = await fetch(profileUrl, { headers: headers });
+        
         if (!profileRes.ok) throw new Error(`IG nolak akses Profil (Status: ${profileRes.status})`);
         
         const profileData = await profileRes.json();
+        if (!profileData?.data?.user) throw new Error("Akun gak ketemu atau Private");
+        
         const user = profileData.data.user;
         const userId = user.id;
 
-        // BONGKAR POSTINGAN (Termasuk Carousel/Slide)
+        // Bongkar Postingan (Termasuk Slide/Carousel)
         const timelineEdges = user.edge_owner_to_timeline_media.edges || [];
         const grid_media = timelineEdges.map(edge => {
             const node = edge.node;
             let children = [];
 
-            // Kalau postingannya Slide/Carousel, bongkar semua isinya!
             if (node.__typename === 'GraphSidecar' && node.edge_sidecar_to_children) {
                 children = node.edge_sidecar_to_children.edges.map(child => {
                     const cNode = child.node;
                     return {
                         id: cNode.id,
-                        type: cNode.__typename, // GraphImage atau GraphVideo
+                        type: cNode.__typename,
                         url: cNode.is_video ? cNode.video_url : cNode.display_url
                     };
                 });
@@ -67,7 +75,7 @@ export default async function handler(req, res) {
                 type: node.__typename,
                 thumbnail: node.display_url,
                 video_url: node.video_url || null,
-                carousel_items: children // <--- ISI FOTO/VIDEO SLIDE ADA DI SINI
+                carousel_items: children
             };
         });
 
@@ -79,7 +87,7 @@ export default async function handler(req, res) {
 
         // Fetch Story
         try {
-            const storyRes = await fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers: vipHeaders });
+            const storyRes = await fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers: headers });
             if (storyRes.ok) {
                 const storyData = await storyRes.json();
                 const reels = storyData.reels_media[0];
@@ -92,11 +100,11 @@ export default async function handler(req, res) {
                     }));
                 }
             }
-        } catch (e) { console.log("Gagal tarik story"); }
+        } catch (e) { /* Abaikan error story kalau gak ada */ }
 
         // Fetch Highlights
         try {
-            const highlightRes = await fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers: vipHeaders });
+            const highlightRes = await fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers: headers });
             if (highlightRes.ok) {
                 const highlightData = await highlightRes.json();
                 if (highlightData.tray) {
@@ -108,7 +116,7 @@ export default async function handler(req, res) {
                     }));
                 }
             }
-        } catch (e) { console.log("Gagal tarik highlight"); }
+        } catch (e) { /* Abaikan error highlight */ }
 
         // ==========================================
         // OUTPUT FINAL
