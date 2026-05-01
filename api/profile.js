@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-    // Setting CORS
+    // Setting CORS biar aman ditarik sama aplikasi Android/Kotlin lu
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
 
@@ -9,9 +9,11 @@ export default async function handler(req, res) {
         return res.status(400).json({ success: false, message: "Link Instagram-nya mana bro?" });
     }
 
-    // SESSION ID TUMBAL LU
+    // ==========================================
+    // KUNCI VIP (SESSION ID AKUN TUMBAL)
+    // ==========================================
     const SESSION_ID = "65092514569:tofeB3s3mKckSB:10:AYjrax5Hn5rGBL4ziAq5qoJrdofjeOctzBkqto5lYw";
-
+    
     try {
         let username = "";
         
@@ -25,24 +27,26 @@ export default async function handler(req, res) {
 
         if (!username) throw new Error("Gagal nemuin username dari link");
 
-        // ==========================================
-        // HEADER SUPER LENGKAP + COOKIE VIP
-        // Kita pake ini buat SEMUA request biar aman 100%
-        // ==========================================
-        const headers = {
+        // Header standar (Penting banget biar gak kena 400 Bad Request)
+        const baseHeaders = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
             "X-IG-App-ID": "936619743392459",
             "Accept-Language": "en-US,en;q=0.9",
             "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "Cookie": `sessionid=${SESSION_ID};` // Masuk langsung pake akun tumbal!
+            "Sec-Fetch-Site": "same-origin"
+        };
+
+        // Header VIP (Pake Cookie Tumbal buat Story & Highlight)
+        const vipHeaders = {
+            ...baseHeaders,
+            "Cookie": `sessionid=${SESSION_ID};`
         };
 
         // ==========================================
-        // 1. TEMBAK PROFIL & POSTINGAN GRID
+        // 1. TEMBAK PROFIL & GRID (POSTS/REELS)
         // ==========================================
         const profileUrl = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
-        const profileRes = await fetch(profileUrl, { headers: headers });
+        const profileRes = await fetch(profileUrl, { headers: baseHeaders });
         
         if (!profileRes.ok) throw new Error(`IG nolak akses Profil (Status: ${profileRes.status})`);
         
@@ -52,12 +56,13 @@ export default async function handler(req, res) {
         const user = profileData.data.user;
         const userId = user.id;
 
-        // Bongkar Postingan (Termasuk Slide/Carousel)
+        // Bedah Grid (Post & Reels) + FIX CAROUSEL/SLIDE
         const timelineEdges = user.edge_owner_to_timeline_media.edges || [];
         const grid_media = timelineEdges.map(edge => {
             const node = edge.node;
             let children = [];
 
+            // Bongkar isinya kalau dia bentuknya Slide (GraphSidecar)
             if (node.__typename === 'GraphSidecar' && node.edge_sidecar_to_children) {
                 children = node.edge_sidecar_to_children.edges.map(child => {
                     const cNode = child.node;
@@ -72,54 +77,58 @@ export default async function handler(req, res) {
             return {
                 id: node.id,
                 shortcode: node.shortcode,
-                type: node.__typename,
+                type: node.__typename, 
                 thumbnail: node.display_url,
                 video_url: node.video_url || null,
-                carousel_items: children
+                carousel_items: children // Data slide masuk sini bro!
             };
         });
 
         // ==========================================
-        // 2. TEMBAK STORIES & HIGHLIGHTS
+        // 2. TEMBAK STORIES & HIGHLIGHTS BARENGAN
         // ==========================================
         let stories = [];
         let highlights = [];
+        let debug_info = {}; // Buat ngelacak masalah
 
-        // Fetch Story
-        try {
-            const storyRes = await fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers: headers });
-            if (storyRes.ok) {
-                const storyData = await storyRes.json();
-                const reels = storyData.reels_media[0];
-                if (reels && reels.items) {
-                    stories = reels.items.map(item => ({
-                        id: item.id,
-                        type: item.media_type === 1 ? "image" : "video",
-                        url: item.media_type === 1 ? item.image_versions2?.candidates[0]?.url : item.video_versions?.[0]?.url,
-                        taken_at: item.taken_at
-                    }));
-                }
-            }
-        } catch (e) { /* Abaikan error story kalau gak ada */ }
+        const [storyRes, highlightRes] = await Promise.all([
+            fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers: vipHeaders }).catch(e => e),
+            fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers: vipHeaders }).catch(e => e)
+        ]);
 
-        // Fetch Highlights
-        try {
-            const highlightRes = await fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers: headers });
-            if (highlightRes.ok) {
-                const highlightData = await highlightRes.json();
-                if (highlightData.tray) {
-                    highlights = highlightData.tray.map(trayItem => ({
-                        id: trayItem.id,
-                        title: trayItem.title,
-                        cover_url: trayItem.cover_media?.cropped_image_version?.url || null,
-                        media_count: trayItem.media_count
-                    }));
-                }
+        // Simpen statusnya biar kita tau nembus apa ditolak
+        debug_info.story_status = storyRes?.status || "Error Fetch";
+        debug_info.highlight_status = highlightRes?.status || "Error Fetch";
+
+        // Parsing Stories
+        if (storyRes && storyRes.ok) {
+            const storyData = await storyRes.json();
+            const reels = storyData.reels_media[0];
+            if (reels && reels.items) {
+                stories = reels.items.map(item => ({
+                    id: item.id,
+                    type: item.media_type === 1 ? "image" : "video",
+                    url: item.media_type === 1 ? item.image_versions2?.candidates[0]?.url : item.video_versions?.[0]?.url,
+                    taken_at: item.taken_at
+                }));
             }
-        } catch (e) { /* Abaikan error highlight */ }
+        }
+
+        // Parsing Highlights (Sorotan)
+        if (highlightRes && highlightRes.ok) {
+            const highlightData = await highlightRes.json();
+            if (highlightData.tray) {
+                highlights = highlightData.tray.map(trayItem => ({
+                    id: trayItem.id,
+                    title: trayItem.title,
+                    cover_url: trayItem.cover_media?.cropped_image_version?.url || null,
+                    media_count: trayItem.media_count
+                }));
+            }
+        }
 
         // ==========================================
-        // OUTPUT FINAL
+        // 3. OUTPUT FINAL JSON
         // ==========================================
         res.status(200).json({
             success: true,
@@ -138,7 +147,8 @@ export default async function handler(req, res) {
                 posts: grid_media,
                 stories: stories,
                 highlights: highlights
-            }
+            },
+            debug: debug_info // <--- CEK BAGIAN INI NANTI
         });
 
     } catch (error) {
