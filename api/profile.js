@@ -27,7 +27,7 @@ export default async function handler(req, res) {
 
         if (!username) throw new Error("Gagal nemuin username dari link");
 
-        // Header standar (Penting banget biar gak kena 400 Bad Request)
+        // Header standar
         const baseHeaders = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
             "X-IG-App-ID": "936619743392459",
@@ -36,7 +36,7 @@ export default async function handler(req, res) {
             "Sec-Fetch-Site": "same-origin"
         };
 
-        // Header VIP (Pake Cookie Tumbal buat Story & Highlight)
+        // Header VIP (Pake Cookie Tumbal)
         const vipHeaders = {
             ...baseHeaders,
             "Cookie": `sessionid=${SESSION_ID};`
@@ -51,36 +51,21 @@ export default async function handler(req, res) {
         if (!profileRes.ok) throw new Error(`IG nolak akses Profil (Status: ${profileRes.status})`);
         
         const profileData = await profileRes.json();
-        if (!profileData?.data?.user) throw new Error("Akun gak ketemu atau Private");
+        if (!profileData?.data?.user) throw new Error("Akun gak ketemu atau Private (gak bisa di-scrape walau pake tumbal kalo private)");
         
         const user = profileData.data.user;
         const userId = user.id;
 
-        // Bedah Grid (Post & Reels) + FIX CAROUSEL/SLIDE
+        // Bedah Grid (Post & Reels)
         const timelineEdges = user.edge_owner_to_timeline_media.edges || [];
         const grid_media = timelineEdges.map(edge => {
             const node = edge.node;
-            let children = [];
-
-            // Bongkar isinya kalau dia bentuknya Slide (GraphSidecar)
-            if (node.__typename === 'GraphSidecar' && node.edge_sidecar_to_children) {
-                children = node.edge_sidecar_to_children.edges.map(child => {
-                    const cNode = child.node;
-                    return {
-                        id: cNode.id,
-                        type: cNode.__typename,
-                        url: cNode.is_video ? cNode.video_url : cNode.display_url
-                    };
-                });
-            }
-
             return {
                 id: node.id,
                 shortcode: node.shortcode,
-                type: node.__typename, 
+                type: node.__typename, // GraphImage atau GraphVideo
                 thumbnail: node.display_url,
-                video_url: node.video_url || null,
-                carousel_items: children // Data slide masuk sini bro!
+                video_url: node.video_url || null
             };
         });
 
@@ -89,16 +74,12 @@ export default async function handler(req, res) {
         // ==========================================
         let stories = [];
         let highlights = [];
-        let debug_info = {}; // Buat ngelacak masalah
 
+        // Jalanin 2 request barengan biar API lu kerjanya cepet
         const [storyRes, highlightRes] = await Promise.all([
-            fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers: vipHeaders }).catch(e => e),
-            fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers: vipHeaders }).catch(e => e)
+            fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers: vipHeaders }).catch(() => null),
+            fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers: vipHeaders }).catch(() => null)
         ]);
-
-        // Simpen statusnya biar kita tau nembus apa ditolak
-        debug_info.story_status = storyRes?.status || "Error Fetch";
-        debug_info.highlight_status = highlightRes?.status || "Error Fetch";
 
         // Parsing Stories
         if (storyRes && storyRes.ok) {
@@ -147,8 +128,7 @@ export default async function handler(req, res) {
                 posts: grid_media,
                 stories: stories,
                 highlights: highlights
-            },
-            debug: debug_info // <--- CEK BAGIAN INI NANTI
+            }
         });
 
     } catch (error) {
