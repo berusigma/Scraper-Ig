@@ -4,110 +4,127 @@ export default async function handler(req, res) {
 
     const { url, highlight_id } = req.query;
 
-    // DATA TUMBAL (Trio Cookie Lu)
+    // ==========================================
+    // COOKIE TUMBAL BUAT BUKA STORY/HIGHLIGHT
+    // ==========================================
     const SESSION_ID = "65092514569:tofeB3s3mKckSB:10:AYjrax5Hn5rGBL4ziAq5qoJrdofjeOctzBkqto5lYw";
+    const DS_USER_ID = "65092514569";
     const CSRF_TOKEN = "t-YhlTgmNH1_CDj2ta4iUc";
 
-    const commonHeaders = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    const headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
         "X-IG-App-ID": "936619743392459",
         "X-CSRFToken": CSRF_TOKEN,
-        "Cookie": `sessionid=${SESSION_ID}; csrftoken=${CSRF_TOKEN};`,
+        "Cookie": `sessionid=${SESSION_ID}; ds_user_id=${DS_USER_ID}; csrftoken=${CSRF_TOKEN};`,
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Origin": "https://www.instagram.com",
-        "Referer": "https://www.instagram.com/",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin"
     };
 
     try {
-        // --- FITUR: ISI HIGHLIGHT ---
+        // ==========================================
+        // 1. MODE LIHAT ISI HIGHLIGHT TERTENTU (OPTIONAL)
+        // ==========================================
         if (highlight_id) {
-            const hRes = await fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:${highlight_id}`, { headers: commonHeaders });
+            const hMediaUrl = `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=highlight:${highlight_id}`;
+            const hRes = await fetch(hMediaUrl, { headers });
             const hData = await hRes.json();
+            const items = hData.reels_media[0]?.items || [];
+
             return res.status(200).json({
                 success: true,
-                items: (hData.reels_media[0]?.items || []).map(i => ({
-                    url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url,
-                    is_video: i.media_type !== 1
+                type: "highlight_items",
+                items: items.map(i => ({
+                    id: i.id,
+                    type: i.media_type === 1 ? "image" : "video",
+                    url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url
                 }))
             });
         }
 
-        if (!url) return res.status(400).json({ success: false, message: "URL kosong" });
+        // ==========================================
+        // 2. MODE UTAMA: SCRAPE PROFIL + POST + STORY + HIGHLIGHT TRAY
+        // ==========================================
+        if (!url) return res.status(400).json({ success: false, message: "Link mana bro?" });
 
-        let username = url.includes("instagram.com") 
-            ? new URL(url).pathname.replace(/\//g, '').trim() 
-            : url.replace('@', '').trim();
-
-        // --- 1. AMBIL PROFIL & POSTINGAN (DENGAN FALLBACK) ---
-        let profileRes = await fetch(`https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`, { headers: commonHeaders });
-        let profileData = await profileRes.json();
-        
-        // Jika data postingan kosong, coba panggil ulang pake endpoint berbeda
-        if (!profileData?.data?.user?.edge_owner_to_timeline_media?.edges?.length) {
-            const fallbackRes = await fetch(`https://www.instagram.com/${username}/?__a=1&__d=dis`, { headers: commonHeaders });
-            const fallbackData = await fallbackRes.json();
-            if (fallbackData?.graphql?.user) {
-                profileData = { data: { user: fallbackData.graphql.user } };
-            }
+        // Bersihin username
+        let username = "";
+        if (url.includes("instagram.com")) {
+            const parsedUrl = new URL(url);
+            username = parsedUrl.pathname.replace(/\//g, '').trim();
+        } else {
+            username = url.replace('@', '').trim();
         }
+        if (!username) throw new Error("Username gak ketemu dari link.");
 
+        // ----- 2a. Ambil profil + data postingan (pakai cookie) -----
+        const profileUrl = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
+        const profileRes = await fetch(profileUrl, { headers });
+        if (!profileRes.ok) throw new Error(`Gagal akses profil (status: ${profileRes.status})`);
+
+        const profileData = await profileRes.json();
         const user = profileData?.data?.user;
-        if (!user) throw new Error("User tidak ditemukan atau Session mati");
+        if (!user) throw new Error("Akun gak ketemu atau di-private total.");
 
         const userId = user.id;
 
-        // Bongkar Postingan & Reels
-        const posts = (user.edge_owner_to_timeline_media?.edges || []).map(edge => {
+        // Pakai logika postingan dari kode pertama (TERUJI, PASTI MUNCUL)
+        const timelineEdges = user.edge_owner_to_timeline_media?.edges || [];
+        const posts = timelineEdges.map(edge => {
             const node = edge.node;
-            let slides = [];
-            if (node.edge_sidecar_to_children) {
-                slides = node.edge_sidecar_to_children.edges.map(c => ({
-                    url: c.node.is_video ? c.node.video_url : c.node.display_url,
-                    is_video: c.node.is_video
-                }));
+            let children = [];
+
+            // Cek kalo ini slide (carousel)
+            if (node.__typename === 'GraphSidecar' && node.edge_sidecar_to_children) {
+                children = node.edge_sidecar_to_children.edges.map(child => {
+                    const cNode = child.node;
+                    return {
+                        id: cNode.id,
+                        type: cNode.__typename,
+                        url: cNode.is_video ? cNode.video_url : cNode.display_url
+                    };
+                });
             }
+
             return {
                 id: node.id,
                 shortcode: node.shortcode,
+                type: node.__typename,
                 thumbnail: node.display_url,
                 video_url: node.video_url || null,
-                is_video: node.is_video,
-                caption: node.edge_media_to_caption?.edges[0]?.node?.text || "",
-                slides: slides
+                carousel_items: children
             };
         });
 
-        // --- 2. AMBIL STORIES & HIGHLIGHTS (TERPISAH BIAR GAK CRASH SEMUA) ---
-        let stories = [];
-        let highlights = [];
+        // ----- 2b. Ambil story & highlight tray (pakai cookie) -----
+        const [storyRes, highlightRes] = await Promise.all([
+            fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers }),
+            fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers })
+        ]);
 
-        try {
-            const storyRes = await fetch(`https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${userId}`, { headers: commonHeaders });
-            if (storyRes.ok) {
-                const sData = await storyRes.json();
-                stories = (sData.reels_media[0]?.items || []).map(i => ({
-                    url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url,
-                    is_video: i.media_type !== 1
-                }));
-            }
-        } catch (e) { console.error("Story failed"); }
+        let active_stories = [];
+        if (storyRes.ok) {
+            const sData = await storyRes.json();
+            active_stories = (sData.reels_media?.[0]?.items || []).map(i => ({
+                id: i.id,
+                url: i.media_type === 1 ? i.image_versions2.candidates[0].url : i.video_versions[0].url,
+                is_video: i.media_type !== 1
+            }));
+        }
 
-        try {
-            const highlightRes = await fetch(`https://www.instagram.com/api/v1/highlights/${userId}/highlights_tray/`, { headers: commonHeaders });
-            if (highlightRes.ok) {
-                const hData = await highlightRes.json();
-                highlights = (hData.tray || []).map(t => ({
-                    id: t.id.split(':')[1] || t.id,
-                    title: t.title,
-                    cover: t.cover_media?.cropped_image_version?.url || t.cover_media?.display_url
-                }));
-            }
-        } catch (e) { console.error("Highlight failed"); }
+        let highlight_tray = [];
+        if (highlightRes.ok) {
+            const hData = await highlightRes.json();
+            highlight_tray = (hData.tray || []).map(t => ({
+                id: t.id.includes(':') ? t.id.split(':')[1] : t.id,
+                title: t.title,
+                cover: t.cover_media?.cropped_image_version?.url || '',
+                media_count: t.media_count
+            }));
+        }
 
-        // --- OUTPUT FINAL ---
+        // ----- 2c. Susun respons akhir -----
         res.status(200).json({
             success: true,
             profile: {
@@ -116,11 +133,15 @@ export default async function handler(req, res) {
                 full_name: user.full_name,
                 bio: user.biography,
                 profile_pic: user.profile_pic_url_hd,
-                followers: user.edge_followed_by?.count,
-                following: user.edge_follow?.count,
-                posts_count: user.edge_owner_to_timeline_media?.count
+                followers: user.edge_followed_by?.count || 0,
+                following: user.edge_follow?.count || 0,
+                posts_count: user.edge_owner_to_timeline_media?.count || 0
             },
-            data: { posts, stories, highlights }
+            data: {
+                posts: posts,           // <-- POSTINGAN MUNCUL LAGI
+                stories: active_stories,
+                highlights: highlight_tray
+            }
         });
 
     } catch (error) {
